@@ -1,0 +1,1 @@
+modelscope download --model iic/nlp_gte_sentence-embedding_chinese-base --local_dir ../models/iic/nlp_gte_sentence-embedding_chinese-base

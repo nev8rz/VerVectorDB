@@ -1,0 +1,20 @@
+[project]
+name = "vervectordb"
+version = "0.1.0"
+description = "A vector database project"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scikit-learn",
+    "sentence-transformers",
+    "modelscope",
+    "jieba",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["vervectordb"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
