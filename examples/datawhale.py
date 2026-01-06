@@ -1,96 +1,289 @@
-#加载模型
-import os
-import jieba
-from sentence_transformers import SentenceTransformer
+"""
+VerVectorDB 示例代码
+展示HNSW索引、PQ压缩、批量操作和过滤检索功能
+"""
+import numpy as np
 from vervectordb import VerVectorDB
-def read_txt_and_split(file_path):
-    """读取txt文件内容并切分为句子列表"""
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"指定的txt文件不存在：{file_path}")
-    # 读取文件（默认UTF-8编码，若有乱码可尝试gbk）
-    with open(file_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-    # 句子切分
-    sentences = content.split("。")
-    print(f"成功读取txt文件，共切分出 {len(sentences)} 个句子")
-    return sentences
 
-def text_to_vector(text, model):
-    """将文本转换为向量（基于SentenceTransformer模型）"""
-    # encode方法直接返回向量，convert_to_numpy=True确保输出为numpy数组
-    return model.encode(text, convert_to_numpy=True)
+
+def demo_hnsw_index():
+    """演示HNSW索引功能"""
+    print("=" * 60)
+    print("演示HNSW索引功能")
+    print("=" * 60)
+    
+    db = VerVectorDB(vector_dim=128, db_path="demo_hnsw.pkl")
+    
+    n_vectors = 50000
+    vectors = np.random.random((n_vectors, 128)).astype(np.float32)
+    
+    metadatas = [{"text": f"文档{i}", "category": i % 5} for i in range(n_vectors)]
+    ids = db.batch_insert(vectors, metadatas)
+    print(f"批量插入{n_vectors}个向量")
+    
+    db.build_hnsw_index()
+    print("HNSW索引构建完成")
+    
+    query = np.random.random(128).astype(np.float32)
+    results = db.hnsw_search(query, top_k=5)
+    print(f"\nHNSW检索结果(top_k=5):")
+    for r in results:
+        print(f"  ID: {r['vector_id'][:8]}..., 相似度: {r['similarity']:.4f}")
+    
+    db.save()
+
+
+def demo_pq_compression():
+    """演示PQ压缩功能"""
+    print("\n" + "=" * 60)
+    print("演示PQ压缩功能")
+    print("=" * 60)
+    
+    db = VerVectorDB(vector_dim=128, db_path="demo_pq.pkl")
+    
+    n_vectors = 5000
+    vectors = np.random.random((n_vectors, 128)).astype(np.float32)
+    db.batch_insert(vectors)
+    print(f"插入{n_vectors}个向量")
+    
+    original_size = db.vectors.nbytes
+    print(f"原始向量存储大小: {original_size / 1024 / 1024:.2f} MB")
+    
+    db.train_pq(sample_size=1000)
+    
+    db.compress()
+    compressed_size = len(db.pq_codes.tobytes())
+    print(f"压缩后存储大小: {compressed_size / 1024 / 1024:.2f} MB")
+    print(f"压缩比: {original_size / compressed_size:.2f}x")
+    
+    decompressed = db.decompress()
+    reconstruction_error = np.mean(np.abs(db.vectors - decompressed))
+    print(f"平均重构误差: {reconstruction_error:.6f}")
+    
+    db.save()
+
+
+def demo_batch_operations():
+    """演示批量操作功能"""
+    print("\n" + "=" * 60)
+    print("演示批量操作功能")
+    print("=" * 60)
+    
+    db = VerVectorDB(vector_dim=64, db_path="demo_batch.pkl")
+    
+    n_batch = 100
+    n_vectors = 1000
+    for batch_idx in range(n_batch):
+        batch_vectors = np.random.random((10, 64)).astype(np.float32)
+        batch_metas = [{"batch": batch_idx, "index": i} for i in range(10)]
+        db.batch_insert(batch_vectors, batch_metas)
+    
+    print(f"共插入{len(db.vectors)}个向量")
+    
+    queries = np.random.random((20, 64)).astype(np.float32)
+    results = db.batch_search(queries, top_k=3, method="brute_force", batch_size=10)
+    print(f"批量检索{len(queries)}个查询，每个返回top_k=3")
+    print(f"结果数量: {len(results)}")
+    
+    db.build_hnsw_index()
+    hnsw_results = db.batch_search(queries, top_k=3, method="hnsw", batch_size=10)
+    print(f"HNSW批量检索结果数量: {len(hnsw_results)}")
+    
+    db.save()
+
+
+def demo_filtered_search():
+    """演示过滤检索功能"""
+    print("\n" + "=" * 60)
+    print("演示过滤检索功能")
+    print("=" * 60)
+    
+    db = VerVectorDB(vector_dim=64, db_path="demo_filter.pkl")
+    
+    categories = ["科技", "体育", "娱乐", "财经", "教育"]
+    vectors = []
+    metadatas = []
+    
+    for i in range(500):
+        vectors.append(np.random.random(64).astype(np.float32))
+        cat = categories[i % len(categories)]
+        metadatas.append({
+            "text": f"这是关于{cat}的文章{i}",
+            "category": cat,
+            "tags": [cat, "热门"]
+        })
+    
+    db.batch_insert(vectors, metadatas)
+    print(f"插入{len(db.vectors)}个带元数据的向量")
+    
+    query = np.random.random(64).astype(np.float32)
+    results = db.filtered_search(query, top_k=3, keywords=["科技"])
+    print(f"\n关键词过滤搜索 '科技'，结果:")
+    for r in results:
+        print(f"  文本: {r['metadata']['text']}, 类别: {r['metadata']['category']}")
+    
+    def category_filter(meta):
+        return meta.get("category") == "体育"
+    
+    results = db.filtered_search(query, top_k=3, metadata_filter=category_filter)
+    print(f"\n元数据过滤搜索 '体育'，结果:")
+    for r in results:
+        print(f"  文本: {r['metadata']['text']}, 类别: {r['metadata']['category']}")
+    
+    results = db.filtered_search(query, top_k=3, keywords=["娱乐"], 
+                                  metadata_filter=lambda m: m.get("category") == "娱乐")
+    print(f"\n组合过滤搜索，结果:")
+    for r in results:
+        print(f"  文本: {r['metadata']['text']}")
+    
+    db.save()
+
+
+def calculate_recall(ground_truth_ids, result_ids):
+    """计算召回率"""
+    if not ground_truth_ids:
+        return 0.0
+    ground_truth_set = set(ground_truth_ids)
+    hits = sum(1 for r_id in result_ids if r_id in ground_truth_set)
+    return hits / len(ground_truth_set)
+
+
+def demo_recall_comparison():
+    """对比不同检索方法的召回率"""
+    print("\n" + "=" * 60)
+    print("对比不同检索方法的召回率")
+    print("=" * 60)
+    
+    import time
+    
+    db = VerVectorDB(vector_dim=128, db_path="demo_recall.pkl")
+    
+    # 插入数据 - 增加数据量
+    n_vectors = 50000  # 从5000增加到50000
+    vectors = np.random.random((n_vectors, 128)).astype(np.float32)
+    db.batch_insert(vectors)
+    print(f"插入{n_vectors}个向量")
+    
+    # 构建索引
+    db.build_ivf_index(n_clusters=16)
+    db.build_hnsw_index()
+    print("索引构建完成")
+    
+    # 生成测试查询
+    n_queries = 100
+    top_k = 10
+    queries = np.random.random((n_queries, 128)).astype(np.float32)
+    
+    # 暴力检索结果作为基准
+    print(f"\n执行{n_queries}个查询，对比召回率...")
+    bf_results_list = []
+    hnsw_results_list = []
+    ivf_results_list = []
+    
+    for query in queries:
+        bf_results = db.brute_force_search(query, top_k=top_k)
+        bf_results_list.append([r['vector_id'] for r in bf_results])
+    
+    # HNSW检索
+    for query in queries:
+        hnsw_results = db.hnsw_search(query, top_k=top_k)
+        hnsw_results_list.append([r['vector_id'] for r in hnsw_results])
+    
+    # IVF检索
+    for query in queries:
+        ivf_results = db.ivf_search(query, top_k=top_k)
+        ivf_results_list.append([r['vector_id'] for r in ivf_results])
+    
+    # 计算召回率
+    bf_recall = 1.0  # 暴力检索是基准
+    hnsw_recall = np.mean([calculate_recall(bf, hnsw) 
+                          for bf, hnsw in zip(bf_results_list, hnsw_results_list)])
+    ivf_recall = np.mean([calculate_recall(bf, ivf) 
+                         for bf, ivf in zip(bf_results_list, ivf_results_list)])
+    
+    print(f"\n召回率对比 (top_k={top_k}):")
+    print(f"  暴力检索 (Brute Force): {bf_recall:.4f} (基准)")
+    print(f"  IVF索引:                 {ivf_recall:.4f}")
+    print(f"  HNSW索引:                {hnsw_recall:.4f}")
+    
+    # 性能对比
+    print(f"\n性能对比:")
+    start = time.time()
+    for query in queries:
+        db.brute_force_search(query, top_k=10)
+    bf_time = (time.time() - start) / n_queries * 1000
+    
+    start = time.time()
+    for query in queries:
+        db.ivf_search(query, top_k=10)
+    ivf_time = (time.time() - start) / n_queries * 1000
+    
+    start = time.time()
+    for query in queries:
+        db.hnsw_search(query, top_k=10)
+    hnsw_time = (time.time() - start) / n_queries * 1000
+    
+    print(f"  暴力检索: {bf_time:.3f}ms/查询")
+    print(f"  IVF索引:  {ivf_time:.3f}ms/查询")
+    print(f"  HNSW索引: {hnsw_time:.3f}ms/查询")
+    print(f"\n  IVF加速比: {bf_time/ivf_time:.1f}x")
+    print(f"  HNSW加速比: {bf_time/hnsw_time:.1f}x")
+    
+    db.save()
+
+
+def demo_comparison():
+    """对比不同检索方法"""
+    print("\n" + "=" * 60)
+    print("对比不同检索方法")
+    print("=" * 60)
+    
+    import time
+    
+    db = VerVectorDB(vector_dim=128, db_path="demo_compare.pkl")
+    
+    n_vectors = 5000
+    vectors = np.random.random((n_vectors, 128)).astype(np.float32)
+    db.batch_insert(vectors)
+    print(f"插入{n_vectors}个向量")
+    
+    db.build_ivf_index(n_clusters=16)
+    db.build_hnsw_index()
+    print("索引构建完成")
+    
+    query = np.random.random(128).astype(np.float32)
+    
+    start = time.time()
+    bf_results = db.brute_force_search(query, top_k=10)
+    bf_time = time.time() - start
+    print(f"暴力检索耗时: {bf_time*1000:.2f}ms")
+    
+    start = time.time()
+    ivf_results = db.ivf_search(query, top_k=10)
+    ivf_time = time.time() - start
+    print(f"IVF检索耗时: {ivf_time*1000:.2f}ms")
+    
+    start = time.time()
+    hnsw_results = db.hnsw_search(query, top_k=10)
+    hnsw_time = time.time() - start
+    print(f"HNSW检索耗时: {hnsw_time*1000:.2f}ms")
+    
+    print(f"\n暴力检索结果数: {len(bf_results)}")
+    print(f"IVF检索结果数: {len(ivf_results)}")
+    print(f"HNSW检索结果数: {len(hnsw_results)}")
+    
+    db.save()
+
 
 if __name__ == "__main__":
-    # 1. 配置参数（请根据实际情况修改txt文件路径和模型路径）
-    txt_file = "./data/datawhale.txt"  # 你的txt文件路径
-    model_dir = "../models/iic/nlp_gte_sentence-embedding_chinese-base"  # 预训练模型本地存储路径
-    VECTOR_DIM = 768  # 主流中文语义模型输出维度多为768，可根据实际模型调整
+    # 运行所有演示
+    demo_hnsw_index()
+    demo_pq_compression()
+    demo_batch_operations()
+    demo_filtered_search()
+    demo_recall_comparison()  # 新增召回率对比
+    demo_comparison()
     
-    # 2. 加载中文语义向量模型（两种加载方式可选）
-    print("正在加载中文文本嵌入模型...")
-    model = SentenceTransformer(model_dir)
-    print(f"成功加载本地模型：{model_dir}")
-
-    # 3. 初始化向量数据库
-    db = VerVectorDB(vector_dim=VECTOR_DIM)
-    
-    # 4. 读取txt文件并切分句子
-    print(f"\n正在读取并处理txt文件：{txt_file}")
-    sentences = read_txt_and_split(txt_file)
-    if not sentences:
-        raise ValueError("未从txt文件中提取到有效句子")
-    
-    # 5. 句子转向量并插入数据库（附带元数据：原始句子）
-    print("\n正在将句子转向量并插入数据库...")
-    embeddings = model.encode(sentences)  # 批量生成向量，效率更高
-    for idx, (sentence, embedding) in enumerate(zip(sentences, embeddings), 1):
-        # 元数据包含句子内容和序号，便于后续查看
-        metadata = {"sentence": sentence, "sequence": idx}
-        db.insert(embedding, metadata=metadata)
-    
-    # 6. 持久化数据库
-    db.save()
-    
-    # 7. 测试暴力检索（查询与向量数据库相关的内容）
-    print("\n=== 暴力检索结果（查询：'Datawhale有多个学习者参与活动'）===")
-    query_text = "Datawhale有多个学习者参与活动"
-    query_vector = text_to_vector(query_text, model)
-    brute_results = db.brute_force_search(query_vector, top_k=3)
-    for res in brute_results:
-        print(f"相似度：{res['similarity']:.4f} | 句子：{res['metadata']['sentence']}")
-    
-    # 8. 构建IVF索引并测试近似检索
-    print("\n=== IVF近似检索结果（查询：'Datawhale有多个学习者参与活动'）===")
-    # 根据句子数量调整聚类数（一般为数据量的平方根左右）
-    n_clusters = max(2, int(len(sentences)**0.5))
-    db.build_ivf_index(n_clusters=n_clusters)
-    ivf_results = db.ivf_search(query_vector, top_k=3)
-    for res in ivf_results:
-        print(f"相似度：{res['similarity']:.4f} | 聚类ID：{res['cluster_id']} | 句子：{res['metadata']['sentence']}")
-    
-    # 9. 测试数据更新与查询
-    print("\n=== 数据更新与查询测试 ===")
-    # 获取第一个向量的ID（即第一个句子对应的向量）
-    first_vector_id = db.vector_ids[0]
-    first_sentence = db.get_by_id(first_vector_id)['metadata']['sentence']
-    print(f"待更新的原始句子：{first_sentence}")
-    # 更新其元数据（模拟句子修正）
-    new_metadata = {"sentence": f"【修正】{first_sentence}", "sequence": 1, "updated": True}
-    db.update(first_vector_id, new_metadata=new_metadata)
-    # 按ID查询更新结果
-    updated_res = db.get_by_id(first_vector_id)
-    print(f"更新后的数据：{updated_res['metadata']['sentence']}")
-    
-    # 10. 测试数据删除
-    db.delete(first_vector_id)
-    print(f"\n删除后数据库向量总数：{len(db.vectors)}")
-    
-    # 11. 从本地加载数据库验证持久化功能
-    print("\n=== 从本地加载数据库 ===")
-    loaded_db = VerVectorDB.load()
-    print(f"加载的数据库向量总数：{len(loaded_db.vectors)}")
-    # 验证加载的数据
-    if loaded_db.vector_ids:
-        sample_id = loaded_db.vector_ids[0]
-        sample_data = loaded_db.get_by_id(sample_id)
-        print(f"加载数据示例：{sample_data['metadata']['sentence']}")
+    print("\n" + "=" * 60)
+    print("所有演示完成!")
+    print("=" * 60)
